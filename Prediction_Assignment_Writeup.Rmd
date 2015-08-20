@@ -7,26 +7,28 @@ output:
     keep_md: yes
 ---
 ## Introduction
-A group of enthusiasts who take measurements about themselves regularly with devices like Jawbone Up, Nike FuelBand, and Fitbit were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of this project is to predict the manner in which they perform barbell lifts - correctly and incorrectly in 5 different ways.
+A group of enthusiasts who take measurements about themselves regularly with devices like Jawbone Up, Nike Fuel Band, and Fitbit were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of this project is to predict the manner in which they perform barbell lifts - correctly and incorrectly in 5 different ways.
 
 ## Loading and preprocessing the data
-```{r global_options, include=TRUE}
-# Define global option for knitr
-knitr::opts_chunk$set(fig.width=8, fig.height=6, fig.path='figure/',
-                      echo=TRUE, warning=FALSE, message=FALSE)
+```{r global_options}
+## Define global option for knitr
+knitr::opts_chunk$set(fig.width=6, fig.height=4, fig.path='figure/', 
+                      echo=TRUE, warning=FALSE, message=FALSE);
 
-# Load libraries
+## Load libraries
 library(caret);
-library(dplyr);
 library(randomForest);
-
-# Assure reproducability
-set.seed(4321);
+library(rpart);
+library(pls);
+library(plyr);
+library(knitr);
+library(gbm);
+library(kknn);
 ```
 
 First let's get data we're going to use and load it into the memory
 ```{r load_the_data}
-# download data in case it has not done yet, on a first run
+## download data in case it has not done yet, on a first run
 fTrainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv";
 fTestUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv";
 
@@ -40,19 +42,119 @@ if (!file.exists(fTestDest)){
     download.file(fTestUrl, destfile=fTestDest, method="curl");
 }
 
-# load data
+## load data
 trainData <- read.csv(fTrainDest, na.strings = c("NA", "", "#DIV/0!"));
 testData <- read.csv(fTestDest, na.strings = c("NA", "", "#DIV/0!"));
+
+## Do coherent check
+all.equal(colnames(testData)[1:length(colnames(testData)) - 1], 
+          colnames(trainData)[1:length(colnames(trainData)) - 1]);
 ```
 
-First we will partition the train data. We're going to split it into the, training set and the test set and we're going to use about 75% of this  data to train the model and 25% to test.
-This will give me a subset of that data that are just for training and a subset of the data
-that adjust for testing.
-```{r}
-inTrain <- createDataPartition(y = trainData$classe, p = 0.75, list = FALSE);
+## Data Cleaning and PreProcessing
+
+First, we split the data into two groups: a training set and a test set. To do this, the createDataPartition function is used:
+```{r cleaning_data}
+inTrain <- createDataPartition(y = trainData$classe,  ## the outcome data are needed
+                               p = 0.75,  ## The percentage of data in the training set
+                               list = FALSE);  ## The format of the results
 training <- trainData[inTrain, ];
 testing <- trainData[-inTrain, ];
+
+## Remove non-zero variance
+nzvcol <- nearZeroVar(training);
+training <- training[, -nzvcol];
+
+
+## Remove variables with more than 50% missing values
+vars <- sapply(training, function(x) {
+    sum(!(is.na(x) | x == ""))
+})
+nulls <- names(vars[vars < 0.5 * length(training$classe)])
+
+## Remove features not related to prediction like id, timestamp and names
+firstCols <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+            "cvtd_timestamp", "new_window", "num_window");
+
+rmCols <- c(firstCols, nulls);
+training <- training[, !names(training) %in% rmCols];
 ```
 
-Next we can fit a model, so here we're going to use the train command from the caret package, and try to predict type. And we use the tilde and the dot to say use all the other variables in this data frame in order to predict the type. And tell also which of the methods
-that we'd like to use - here we're going to use GLM.
+
+## Tune the model using different algorithms
+The following models will be estimated: Random forest, Least squares discriminant analysis (PLSDA), Gradient boosting machine and k-Nearest Neighbors. 
+
+
+To modify the resampling method, a trainControl function is used. We will use method "k-fold cross validation", which involves splitting the dataset into k-subsets. For each subset is held out while the model is trained on all other subsets. This process is completed until accuracy is determine for each instance in the dataset, and an overall accuracy estimate is provided.
+
+
+For pre-processing we will use centering and scaling (default).
+```{r train_data}
+## Assure repeatability
+set.seed(54321);
+
+#tc <- trainControl(method = "repeatedcv", 
+#                   repeats = 3,
+#                   classProbs = TRUE, 
+#                   allowParallel=TRUE);
+
+tc <- trainControl(method = "cv", number = 3); ## if we set it to 10 it computes too long
+
+rfModel <- train(classe ~ ., data = training, method = "rf", trControl = tc);
+rfModel$results;
+
+plsModel <- train(classe ~ ., data = training, method = "pls", trControl = tc);
+plsModel$results;
+
+gbmModel <- train(classe ~ ., data = training, method = "gbm", 
+                verbose = FALSE, trControl = tc);
+gbmModel$results;
+
+knnModel <- train(classe ~ ., data = training, method = "kknn", trControl = tc);
+knnModel$results;
+```
+
+
+We can see from the results above that Random Forest and Gradient boosting machine models provides results with highest accuracy, even without using ROC for optimization. 
+```{r}
+Methods <- c("Random forest", "Least squares discriminant analysis", 
+             "Gradient boosting machine", "k-Nearest Neighbors");
+Accuracy <- c(max(rfModel$results$Accuracy), 
+              max(plsModel$results$Accuracy),
+              max(gbmModel$results$Accuracy),
+              max(knnModel$results$Accuracy));
+perf <- cbind(Methods, Accuracy);
+kable(perf);
+```
+
+To answer the second part of the assignment Random Forest will be used. We will skip testing against test set of training data.
+
+## Testing against test dataset
+Apply the algorithm to the 20 test cases in the test data.
+```{r apply_method_on_test}
+answersFromRF <- predict(rfModel, testData);
+answersFromRF;
+```
+
+## Saving results
+```{r save_results}
+pml_write_files = function(x){
+    n = length(x);
+    for(i in 1:n){
+        filename = paste0("./answers/problem_id_",i,".txt");
+        write.table(x[i],
+                    file = filename,
+                    quote = FALSE,
+                    row.names = FALSE,
+                    col.names = FALSE);
+  }
+}
+
+pml_write_files(answersFromRF);
+```
+
+
+## References
+1. [How To Estimate Model Accuracy in R Using The Caret Package](http://machinelearningmastery.com/how-to-estimate-model-accuracy-in-r-using-the-caret-package/)
+2. [A Short Introduction to the caret Package](https://cran.r-project.org/web/packages/caret/vignettes/caret.pdf)
+3. [Predictive Modeling with R and the caret Package](https://www.r-project.org/nosvn/conferences/useR-2013/Tutorials/kuhn/user_caret_2up.pdf)
