@@ -2,7 +2,7 @@
 Milen Angelov  
 August 13, 2015  
 ## Introduction
-A group of enthusiasts who take measurements about themselves regularly with devices like Jawbone Up, Nike FuelBand, and Fitbit were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of this project is to predict the manner in which they perform barbell lifts - correctly and incorrectly in 5 different ways.
+A group of enthusiasts who take measurements about themselves regularly with devices like Jawbone Up, Nike Fuel Band, and Fitbit were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of this project is to predict the manner in which they perform barbell lifts - correctly and incorrectly in 5 different ways.
 
 ## Loading and preprocessing the data
 
@@ -48,18 +48,36 @@ library(pls);
 ```
 
 ```r
-library(MethComp);
+library(plyr);
+library(knitr);
+library(gbm);
 ```
 
 ```
-## Loading required package: nlme
+## Loading required package: survival
+## 
+## Attaching package: 'survival'
+## 
+## The following object is masked from 'package:caret':
+## 
+##     cluster
+## 
+## Loading required package: splines
+## Loading required package: parallel
+## Loaded gbm 2.1.1
 ```
 
 ```r
-library(knitr);
+library(kknn);
+```
 
-## Assure reproducability
-set.seed(4321);
+```
+## 
+## Attaching package: 'kknn'
+## 
+## The following object is masked from 'package:caret':
+## 
+##     contr.dummy
 ```
 
 First let's get data we're going to use and load it into the memory
@@ -94,162 +112,156 @@ all.equal(colnames(testData)[1:length(colnames(testData)) - 1],
 
 ## Data Cleaning and PreProcessing
 
-```r
-## Remove non-zero variance
-columns <- nearZeroVar(trainData, saveMetrics = TRUE);
-trainData <- trainData[, !columns$nzv];
-
-## Remove features not related to prediction like id, timestamp and names
-trainData <- trainData[, -(1:6)];
-
-## Convert classe into factor
-trainData$classe <- factor(trainData$classe);
-levels(trainData$classe);
-```
-
-```
-## [1] "A" "B" "C" "D" "E"
-```
-
-First, we split the data into two groups: a training set and a test set. To do this, the ***createDataPartition*** function is used:
+First, we split the data into two groups: a training set and a test set. To do this, the createDataPartition function is used:
 
 ```r
 inTrain <- createDataPartition(y = trainData$classe,  ## the outcome data are needed
                                p = 0.75,  ## The percentage of data in the training set
                                list = FALSE);  ## The format of the results
-
-str(inTrain);
-```
-
-```
-##  int [1:14718, 1] 1 2 3 4 5 6 7 8 9 10 ...
-##  - attr(*, "dimnames")=List of 2
-##   ..$ : NULL
-##   ..$ : chr "Resample1"
-```
-
-```r
-## By default, createDataPartition does a stratified random split of the data.
 training <- trainData[inTrain, ];
 testing <- trainData[-inTrain, ];
 
-dim(training);
+## Remove non-zero variance
+nzvcol <- nearZeroVar(training);
+training <- training[, -nzvcol];
+
+
+## Remove variables with more than 50% missing values
+vars <- sapply(training, function(x) {
+    sum(!(is.na(x) | x == ""))
+})
+nulls <- names(vars[vars < 0.5 * length(training$classe)])
+
+## Remove features not related to prediction like id, timestamp and names
+firstCols <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+            "cvtd_timestamp", "new_window", "num_window");
+
+rmCols <- c(firstCols, nulls);
+training <- training[, !names(training) %in% rmCols];
+```
+
+
+## Tune the model using different algorithms
+The following models will be estimated: Random forest, Least squares discriminant analysis (PLSDA), Gradient boosting machine and k-Nearest Neighbors. 
+
+
+To modify the resampling method, a trainControl function is used. We will use method "k-fold cross validation", which involves splitting the dataset into k-subsets. For each subset is held out while the model is trained on all other subsets. This process is completed until accuracy is determine for each instance in the dataset, and an overall accuracy estimate is provided.
+
+
+For pre-processing we will use centering and scaling (default).
+
+```r
+## Assure repeatability
+set.seed(54321);
+
+#tc <- trainControl(method = "repeatedcv", 
+#                   repeats = 3,
+#                   classProbs = TRUE, 
+#                   allowParallel=TRUE);
+
+tc <- trainControl(method = "cv", number = 3); ## if we set it to 10 it computes too long
+
+rfModel <- train(classe ~ ., data = training, method = "rf", trControl = tc);
+rfModel$results;
 ```
 
 ```
-## [1] 14718   118
+##   mtry  Accuracy     Kappa   AccuracySD      KappaSD
+## 1    2 0.9885853 0.9855583 0.0005414487 0.0006868399
+## 2   27 0.9897405 0.9870211 0.0021981296 0.0027802633
+## 3   52 0.9829464 0.9784261 0.0050991480 0.0064501908
 ```
 
 ```r
-dim(testing);
+plsModel <- train(classe ~ ., data = training, method = "pls", trControl = tc);
+plsModel$results;
 ```
 
 ```
-## [1] 4904  118
+##   ncomp  Accuracy      Kappa  AccuracySD     KappaSD
+## 1     1 0.3174344 0.09365841 0.003917254 0.006307107
+## 2     2 0.3413507 0.13879548 0.005257655 0.006132755
+## 3     3 0.3727409 0.18174637 0.017238375 0.021460529
 ```
-
-## Tune the model using different Algorithms
-Three models will be estimated: Random forest, Least squares discriminant analysis (PLSDA) and Naive Bayes. To modify the resampling method, a trainControl function is used. We will use method "repeatedcv", which is used to specify repeated K-fold cross-validation. For pre-processing we will use centering and scaling.
 
 ```r
-tc <- trainControl(method = "repeatedcv", 
-                   repeats = 3,
-                   classProbs = TRUE);
-
-plsdaFit <- train(classe ~ ., data = training, method = "pls", tuneLength = 15, trControl = tc,
-                  preProc = c("center", "scale"));
-
-rfFit <- train(classe ~ ., data = training, method = "rf", tuneLength = 15, trControl = tc,
-                  preProc = c("center", "scale"));
-
-nbFit <- train(classe ~ ., data = training, method = "nb", tuneLength = 15, trControl = tc,
-                  preProc = c("center", "scale"));
+gbmModel <- train(classe ~ ., data = training, method = "gbm", 
+                verbose = FALSE, trControl = tc);
+gbmModel$results;
 ```
 
-Let's visualize the results
-
-```r
-par(mfrow=c(1,3))
-plot(plsdaFit);
+```
+##   shrinkage interaction.depth n.minobsinnode n.trees  Accuracy     Kappa
+## 1       0.1                 1             10      50 0.7475213 0.6798976
+## 4       0.1                 2             10      50 0.8549401 0.8161996
+## 7       0.1                 3             10      50 0.8993066 0.8725430
+## 2       0.1                 1             10     100 0.8193372 0.7713802
+## 5       0.1                 2             10     100 0.9043347 0.8789367
+## 8       0.1                 3             10     100 0.9391901 0.9230547
+## 3       0.1                 1             10     150 0.8537171 0.8149136
+## 6       0.1                 2             10     150 0.9309690 0.9126634
+## 9       0.1                 3             10     150 0.9595732 0.9488611
+##    AccuracySD     KappaSD
+## 1 0.009336574 0.012302142
+## 4 0.006169253 0.007937827
+## 7 0.002822507 0.003431466
+## 2 0.004135249 0.005540997
+## 5 0.004780560 0.006086774
+## 8 0.007008319 0.008901986
+## 3 0.006567574 0.008505453
+## 6 0.004861967 0.006180313
+## 9 0.003892000 0.004924253
 ```
 
-![](figure/unnamed-chunk-4-1.png) 
-
 ```r
-plot(rfFit);
+knnModel <- train(classe ~ ., data = training, method = "kknn", trControl = tc);
+knnModel$results;
 ```
 
-![](figure/unnamed-chunk-4-2.png) 
-
-```r
-plot(nbFit);
+```
+##   kmax distance  kernel  Accuracy     Kappa  AccuracySD     KappaSD
+## 1    5        2 optimal 0.9798207 0.9744728 0.001942886 0.002460139
+## 2    7        2 optimal 0.9798207 0.9744728 0.001942886 0.002460139
+## 3    9        2 optimal 0.9798207 0.9744728 0.001942886 0.002460139
 ```
 
-![](figure/unnamed-chunk-4-3.png) 
 
-We can see that the first two models provide very similar curve, even without using ROC for optimization. Let's now compare the Accuracy programatically:
+We can see from the results above that Random Forest and Gradient boosting machine models provides results with highest accuracy, even without using ROC for optimization. 
 
 ```r
-Methods <- c("Random forest", "PLSDA", "Naive Bayes");
-Accuracy <- c(max(rfFit$results$Accuracy), 
-              max(plsdaFit$results$Accuracy),
-              max(nbFit$results$Accuracy));
+Methods <- c("Random forest", "Least squares discriminant analysis", 
+             "Gradient boosting machine", "k-Nearest Neighbors");
+Accuracy <- c(max(rfModel$results$Accuracy), 
+              max(plsModel$results$Accuracy),
+              max(gbmModel$results$Accuracy),
+              max(knnModel$results$Accuracy));
 perf <- cbind(Methods, Accuracy);
 kable(perf);
 ```
 
 
 
-Methods         Accuracy          
---------------  ------------------
-Random forest   0.795236928104575 
-PLSDA           0.609714052287582 
-Naive Bayes     0.589950980392157 
+Methods                               Accuracy          
+------------------------------------  ------------------
+Random forest                         0.989740495094529 
+Least squares discriminant analysis   0.372740861530099 
+Gradient boosting machine             0.959573213588486 
+k-Nearest Neighbors                   0.979820738065327 
 
+To answer the second part of the assignment Random Forest will be used. We will skip testing against test set of training data.
 
-## Predict new samples
-To predict new samples, predict.train is used. For classification models, the default behavior is to calculated the predicted class. The option type = "prob" is used to compute class probabilities from the model.
-
-```r
-rfPred <- predict(rfFit, newdata = testing,  type = "prob");
-plsdaPred <- predict(plsdaFit, newdata = testing,  type = "prob");
-nbPred <- predict(nbFit, newdata = testing,  type = "prob");
-```
-
-Next we use resamples function to collect, summarize and contrast the resampling results. We also use [Bland???Altman](https://en.wikipedia.org/wiki/Bland%E2%80%93Altman_plot) type plot to visualize these results.
+## Testing against test dataset
+Apply the algorithm to the 20 test cases in the test data.
 
 ```r
-resamps <- resamples(list(rf = rfFit, plsda = plsdaFit, nb = nbFit));
-summary(resamps);
+answersFromRF <- predict(rfModel, testData);
+answersFromRF;
 ```
 
 ```
-## 
-## Call:
-## summary.resamples(object = resamps)
-## 
-## Models: rf, plsda, nb 
-## Number of resamples: 30 
-## 
-## Accuracy 
-##         Min. 1st Qu. Median   Mean 3rd Qu.   Max. NA's
-## rf    0.6000  0.7537 0.8000 0.7952  0.8559 0.9412    0
-## plsda 0.3333  0.5294 0.6250 0.6097  0.6875 0.9333    0
-## nb    0.3750  0.5000 0.5754 0.5900  0.6875 0.8000    0
-## 
-## Kappa 
-##         Min. 1st Qu. Median   Mean 3rd Qu.   Max. NA's
-## rf    0.4915  0.6844 0.7458 0.7389  0.8153 0.9248    0
-## plsda 0.1477  0.4093 0.5271 0.5048  0.6020 0.9153    0
-## nb    0.2000  0.3592 0.4569 0.4746  0.5965 0.7429    0
+##  [1] B A B A A E D B A A B C B A E E A B B B
+## Levels: A B C D E
 ```
-
-```r
-xyplot(resamps, what = "BlandAltman");
-```
-
-![](figure/unnamed-chunk-7-1.png) 
-
 
 ## Saving results
 
@@ -257,7 +269,7 @@ xyplot(resamps, what = "BlandAltman");
 pml_write_files = function(x){
     n = length(x);
     for(i in 1:n){
-        filename = paste0("problem_id_",i,".txt");
+        filename = paste0("./answers/problem_id_",i,".txt");
         write.table(x[i],
                     file = filename,
                     quote = FALSE,
@@ -266,9 +278,7 @@ pml_write_files = function(x){
   }
 }
 
-pml_write_files(rfPred);
-pml_write_files(nbPred);
-pml_write_files(plsdaPred);
+pml_write_files(answersFromRF);
 ```
 
 
